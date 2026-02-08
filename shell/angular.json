@@ -2,7 +2,8 @@
   "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
   "version": 1,
   "cli": {
-    "packageManager": "npm"
+    "packageManager": "yarn",
+    "analytics": false
   },
   "newProjectRoot": "projects",
   "projects": {
@@ -14,9 +15,15 @@
       "prefix": "app",
       "architect": {
         "build": {
-          "builder": "@angular/build:application",
+          "builder": "@angular-builders/custom-webpack:browser",
           "options": {
-            "browser": "src/main.ts",
+            "customWebpackConfig": {
+              "path": "webpack.config.ts"
+            },
+            "outputPath": "dist/shell",
+            "index": "src/index.html",
+            "main": "src/main.ts",
+            "polyfills": [],
             "tsConfig": "tsconfig.app.json",
             "assets": [
               {
@@ -53,7 +60,12 @@
           "defaultConfiguration": "production"
         },
         "serve": {
-          "builder": "@angular/build:dev-server",
+          "builder": "@angular-builders/custom-webpack:dev-server",
+          "options": {
+            "port": 4200,
+            "liveReload": false,
+            "watch": true
+          },
           "configurations": {
             "production": {
               "buildTarget": "shell:build:production"

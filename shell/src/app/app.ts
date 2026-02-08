@@ -1,12 +1,21 @@
-import { Component, signal } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { Component, signal, ViewChild } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { RemoteComponentRenderer } from './directives/remote-component-renderer.directive';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet],
+  imports: [RouterLink, RemoteComponentRenderer],
   templateUrl: './app.html',
-  styleUrl: './app.css'
+  styleUrl: './app.css',
 })
 export class App {
   protected readonly title = signal('shell');
+
+  @ViewChild(RemoteComponentRenderer) remoteRenderer!: RemoteComponentRenderer;
+
+  async loadRemoteComponent() {
+    if (this.remoteRenderer) {
+      await this.remoteRenderer.loadComponent();
+    }
+  }
 }
