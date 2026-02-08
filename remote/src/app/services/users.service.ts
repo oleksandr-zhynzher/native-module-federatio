@@ -18,8 +18,9 @@ export interface User {
 
 @Injectable()
 export class UsersService {
-  private http = inject(HttpClient);
   private apiUrl = 'https://jsonplaceholder.typicode.com/users';
+
+  constructor(private http: HttpClient) {}
 
   getUsers(): Observable<User[]> {
     return this.http.get<User[]>(this.apiUrl);

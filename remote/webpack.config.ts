@@ -30,6 +30,7 @@ export default (
       exposes: {
         './Component': path.resolve(__dirname, './src/app/app.ts'),
         './store': path.resolve(__dirname, './src/app/store/store.config.ts'),
+        './service': path.resolve(__dirname, './src/app/services/service-initializer.ts'),
       },
       shared: {
         '@angular/animations': { singleton: true, eager: false },
