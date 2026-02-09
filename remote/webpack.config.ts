@@ -28,9 +28,8 @@ export default (
       name: 'remote',
       filename: 'remoteEntry.js',
       exposes: {
-        './Component': path.resolve(__dirname, './src/app/app.ts'),
-        './store': path.resolve(__dirname, './src/app/store/store.config.ts'),
-        './service': path.resolve(__dirname, './src/app/services/service-initializer.ts'),
+        './public-api': path.resolve(__dirname, './src/app/public_api.ts'),
+        './service': path.resolve(__dirname, './src/app/services/users.service.ts'),
       },
       shared: {
         '@angular/animations': { singleton: true, eager: false },

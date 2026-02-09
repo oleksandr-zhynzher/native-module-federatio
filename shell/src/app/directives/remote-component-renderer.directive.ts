@@ -15,6 +15,8 @@ import { loadRemoteModule } from '@angular-architects/module-federation';
 export class RemoteComponentRenderer {
   @Input() remoteEntry!: string;
   @Input() exposedModule!: string;
+  @Input() componentName: string = 'App';
+  @Input() initializeStore: boolean = false;
 
   private viewContainerRef = inject(ViewContainerRef);
   private environmentInjector = inject(EnvironmentInjector);
@@ -22,9 +24,8 @@ export class RemoteComponentRenderer {
   async loadComponent() {
     try {
       this.viewContainerRef.clear();
-      
-      // Load the component and store configuration in parallel
-      const [componentModule, storeModule] = await Promise.all([
+
+      const [publicApi, storeModule] = await Promise.all([
         loadRemoteModule({
           type: 'module',
           remoteEntry: this.remoteEntry,
@@ -33,32 +34,30 @@ export class RemoteComponentRenderer {
         loadRemoteModule({
           type: 'module',
           remoteEntry: this.remoteEntry,
-          exposedModule: './store',
-        })
+          exposedModule: this.exposedModule,
+        }),
       ]);
-      
-      const componentType = componentModule.App;
-      
+
+      const componentType = publicApi.REMOTE_COMPONENTS?.[this.componentName];
+
       if (!componentType) {
-        console.error(`Component not found in module`);
+        console.error(
+          `Component '${this.componentName}' not found in remote module. Available components:`,
+          Object.keys(publicApi.REMOTE_COMPONENTS || {}),
+        );
         return;
       }
 
-      // Get the store providers from the remote module
-      const storeProviders = storeModule.provideRemoteStore();
+      let injectorToUse = this.environmentInjector;
 
-      // Create a custom environment injector with the remote's feature state
-      // The parent injector provides HttpClient and other shared services
-      const customInjector = createEnvironmentInjector(
-        storeProviders,
-        this.environmentInjector
-      );
+      if (this.initializeStore) {
+        const storeProviders = storeModule.provideRemoteStore();
+        injectorToUse = createEnvironmentInjector(storeProviders, this.environmentInjector);
+      }
 
       const componentRef = this.viewContainerRef.createComponent(componentType, {
-        environmentInjector: customInjector,
+        environmentInjector: injectorToUse,
       });
-      
-      console.log('Remote component loaded successfully', componentRef);
     } catch (error) {
       console.error('Error loading remote component:', error);
     }
