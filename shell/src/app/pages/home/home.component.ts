@@ -32,6 +32,7 @@ import { RemoteComponentRenderer } from '../../directives/remote-component-rende
             remoteEntry: 'http://localhost:4300/remoteEntry.js',
             exposedModule: './public-api',
             componentName: currentComponent,
+            moduleName: 'ngModule',
           }"
         >
         </ng-container>

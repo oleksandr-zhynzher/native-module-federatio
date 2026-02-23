@@ -1,7 +1,6 @@
 import { Injectable, ProviderToken } from '@angular/core';
 import { Observable, of } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
-import { errorResult, okResult, Result } from './federated-contract';
 import { RemoteModuleConfig } from './remote-module-loader.service';
 import {
   FederatedOwnedInjector,
@@ -9,7 +8,7 @@ import {
 } from './federated-providers-injector.service';
 
 export interface FederatedServiceHandle<T> {
-  service: T | null;
+  service: T;
   ownedInjector: FederatedOwnedInjector;
   destroy(): void;
 }
@@ -21,55 +20,58 @@ export class FederatedServicesInjectorService {
   inject$<T>(
     serviceName: string,
     config: RemoteModuleConfig,
-    injectProviders = true,
-  ): Observable<Result<FederatedServiceHandle<T>>> {
-    return this.providersInjector.loadModule$(config, injectProviders).pipe(
-      map(({ module: federatedModule, ownedInjector }) => {
+  ): Observable<FederatedServiceHandle<T> | null> {
+    return this.providersInjector.loadModule$(config).pipe(
+      map((loadResult) => {
+        if (!loadResult) {
+          return null;
+        }
+
+        const { module: federatedModule, ownedInjector } = loadResult;
         const exported = federatedModule[serviceName];
 
         if (!exported) {
           ownedInjector.destroy();
-          return errorResult({
-            code: 'SERVICE_NOT_FOUND',
-            message: `Federated service '${serviceName}' not found in remote module`,
-          });
+          console.warn(`Federated service '${serviceName}' not found in remote module`);
+          return null;
         }
 
         if (!this.isProviderToken(exported)) {
           ownedInjector.destroy();
-          return errorResult({
-            code: 'INVALID_SERVICE_EXPORT',
-            message: `Federated service '${serviceName}' export is not a valid provider token`,
-          });
+          console.warn(
+            `Federated service '${serviceName}' export is not a valid provider token`,
+            exported,
+          );
+          return null;
         }
 
         try {
           const service = ownedInjector.injector.get(exported as ProviderToken<T>, null);
 
-          return okResult({
+          if (service === null) {
+            ownedInjector.destroy();
+            console.warn(
+              `Provider for federated service '${serviceName}' is not registered in the remote injector.`,
+            );
+            return null;
+          }
+
+          return {
             service,
             ownedInjector,
             destroy: () => {
               ownedInjector.destroy();
             },
-          });
+          };
         } catch (error) {
           ownedInjector.destroy();
-          return errorResult({
-            code: 'SERVICE_INSTANTIATION_FAILED',
-            message: `Failed to instantiate federated service '${serviceName}'.`,
-            cause: error,
-          });
+          console.warn(`Failed to instantiate federated service '${serviceName}'.`, error);
+          return null;
         }
       }),
       catchError((error) => {
-        return of(
-          errorResult({
-            code: 'LOAD_FAILED',
-            message: `Error during loading federated service '${serviceName}'.`,
-            cause: error,
-          }),
-        );
+        console.warn(`Error during loading federated service '${serviceName}'.`, error);
+        return of(null);
       }),
     );
   }

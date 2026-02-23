@@ -19,7 +19,7 @@ export class RemoteServiceLoader {
    * @param config Remote module configuration
    * @returns Promise resolving to the module exports
    */
-  async loadModule(config: RemoteServiceConfig): Promise<any> {
+  async loadModule(config: RemoteServiceConfig): Promise<any | null> {
     try {
       return await loadRemoteModule({
         type: 'module',
@@ -27,8 +27,8 @@ export class RemoteServiceLoader {
         exposedModule: config.exposedModule,
       });
     } catch (error) {
-      console.error('Error loading remote module:', error);
-      throw error;
+      console.warn('Error loading remote module:', error);
+      return null;
     }
   }
 
@@ -36,7 +36,7 @@ export class RemoteServiceLoader {
     config: RemoteServiceConfig,
     serviceName: string,
     dependencies: any[] = [],
-  ): Promise<T> {
+  ): Promise<T | null> {
     try {
       const serviceModule = await loadRemoteModule({
         type: 'module',
@@ -48,16 +48,17 @@ export class RemoteServiceLoader {
 
       if (!ServiceClass) {
         const availableExports = Object.keys(serviceModule);
-        throw new Error(
+        console.warn(
           `Service '${serviceName}' not found in remote module. Available exports: ${availableExports.join(', ')}`,
         );
+        return null;
       }
 
       // Instantiate service with provided dependencies
       return new ServiceClass(...dependencies) as T;
     } catch (error) {
-      console.error(`Error loading remote service '${serviceName}':`, error);
-      throw error;
+      console.warn(`Error loading remote service '${serviceName}':`, error);
+      return null;
     }
   }
 }

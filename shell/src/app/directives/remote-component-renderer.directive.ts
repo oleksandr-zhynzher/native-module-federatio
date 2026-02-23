@@ -1,62 +1,83 @@
 import {
   Directive,
   EventEmitter,
-  Injector,
-  Input,
-  OnChanges,
+  effect,
+  input,
   OnDestroy,
-  OnInit,
   Output,
-  SimpleChange,
   ViewContainerRef,
   inject,
 } from '@angular/core';
 import {
-  FederatedComponentFacadeService,
+  FederatedComponentMountService,
   LoadedFederatedComponent,
-  ResolvedFederatedConfig,
-} from '../services/federated-component-facade.service';
-import { FederatedLoaderConfigInput } from '../services/federated-contract';
-
-type ComponentChanges<T extends object> = Partial<Record<keyof T, SimpleChange>>;
+} from '../services/federated-component-mount.service';
+import { FederatedLoaderConfig } from '../services/federated-contract';
 
 @Directive({
   selector: '[appDynamicFederatedLoader]',
 })
-export class RemoteComponentRenderer implements OnInit, OnChanges, OnDestroy {
-  private facade = inject(FederatedComponentFacadeService);
-  private injector = inject(Injector);
+export class RemoteComponentRenderer implements OnDestroy {
+  private componentMountService = inject(FederatedComponentMountService);
   private viewContainerRef = inject(ViewContainerRef);
 
-  @Input() declare public componentInputs: Record<string, unknown>;
-  @Input() declare public config: FederatedLoaderConfigInput;
-  @Input() declare public injectProviders: boolean;
+  public readonly componentInputs = input<Record<string, unknown>>({});
+  public readonly config = input<FederatedLoaderConfig | null>(null);
 
   @Output() public readonly destroyedEvent = new EventEmitter<boolean>();
   @Output() public readonly loadedEvent = new EventEmitter<boolean>();
 
-  private initialized = false;
+  private destroyed = false;
+  private loadRequestId = 0;
+  private activeConfigKey: string | null = null;
   private mountedComponent?: LoadedFederatedComponent;
 
-  public ngOnInit(): void {
-    void this.loadComponent();
+  constructor() {
+    this.setupConfigEffect();
+    this.setupInputsEffect();
   }
 
-  public ngOnChanges(changes: ComponentChanges<RemoteComponentRenderer>): void {
-    if (!this.initialized) {
-      return;
-    }
+  private setupConfigEffect(): void {
+    effect(() => {
+      const resolved = this.config();
+      const configKey = this.createConfigKey(resolved);
 
-    if (changes.componentInputs && !changes.componentInputs.firstChange) {
+      if (!resolved || !configKey) {
+        this.handleInvalidConfig();
+        return;
+      }
+
+      if (configKey === this.activeConfigKey) {
+        return;
+      }
+
+      this.activeConfigKey = configKey;
+      void this.loadComponent(resolved);
+    });
+  }
+
+  private setupInputsEffect(): void {
+    effect(() => {
+      this.componentInputs();
       this.applyInputs();
-    }
+    });
   }
 
   public ngOnDestroy(): void {
+    this.destroyed = true;
+    this.loadRequestId += 1;
+
     if (this.mountedComponent) {
       this.destroyedEvent.emit(true);
     }
+
     this.cleanup();
+  }
+
+  private handleInvalidConfig(): void {
+    this.activeConfigKey = null;
+    this.cleanup();
+    this.emitLoadFailure();
   }
 
   private applyInputs(): void {
@@ -64,7 +85,7 @@ export class RemoteComponentRenderer implements OnInit, OnChanges, OnDestroy {
       return;
     }
 
-    for (const [key, value] of Object.entries(this.componentInputs || {})) {
+    for (const [key, value] of Object.entries(this.componentInputs())) {
       try {
         this.mountedComponent.componentRef.setInput(key, value);
       } catch (error) {
@@ -84,48 +105,54 @@ export class RemoteComponentRenderer implements OnInit, OnChanges, OnDestroy {
     this.mountedComponent = undefined;
   }
 
-  private async loadComponent(): Promise<void> {
-    const resolved = this.resolveConfig();
+  private createConfigKey(config: FederatedLoaderConfig | null): string | null {
+    if (!config) {
+      return null;
+    }
+
+    if (!config.remoteEntry || !config.exposedModule || !config.componentName || !config.moduleName) {
+      return null;
+    }
+
+    return `${config.remoteEntry}::${config.exposedModule}::${config.componentName}::${config.moduleName}`;
+  }
+
+  private async loadComponent(resolved: FederatedLoaderConfig): Promise<void> {
+    const requestId = ++this.loadRequestId;
 
     this.cleanup();
 
-    if (
-      !resolved.remoteEntry ||
-      !resolved.exposedModule ||
-      !resolved.componentName ||
-      !resolved.moduleName
-    ) {
-      this.loadedEvent.emit(false);
-      return;
-    }
-
     try {
-      const loaded = await this.facade.loadAndMountComponent(
+      const loaded = await this.componentMountService.loadAndMountComponent(
         resolved,
-        this.injector,
         this.viewContainerRef,
       );
-      if (!loaded.ok) {
-        this.loadedEvent.emit(false);
-        const loadError = (loaded as { ok: false; error: { cause?: unknown; message?: string } })
-          .error;
 
-        console.log(loadError.cause);
+      if (this.destroyed || requestId !== this.loadRequestId) {
+        if (loaded) {
+          loaded.destroy();
+        }
+        return;
+      }
 
+      if (!loaded) {
+        this.emitLoadFailure();
         console.warn(
-          `Failed to load remote component '${resolved.componentName}' from '${resolved.exposedModule}': ${loadError.message ?? ''}`,
-          loadError,
+          `Failed to load remote component '${resolved.componentName}' from '${resolved.exposedModule}'.`,
         );
         return;
       }
 
-      this.mountedComponent = loaded.value;
+      this.mountedComponent = loaded;
 
       this.applyInputs();
-      this.initialized = true;
       this.loadedEvent.emit(true);
     } catch (error) {
-      this.loadedEvent.emit(false);
+      if (this.destroyed || requestId !== this.loadRequestId) {
+        return;
+      }
+
+      this.emitLoadFailure();
       console.error(error);
       console.warn(
         `Failed to load remote component '${resolved.componentName}' from '${resolved.exposedModule}':`,
@@ -134,13 +161,7 @@ export class RemoteComponentRenderer implements OnInit, OnChanges, OnDestroy {
     }
   }
 
-  private resolveConfig(): ResolvedFederatedConfig {
-    return this.facade.resolveConfig(this.config, {
-      remoteEntry: '',
-      exposedModule: './public-api',
-      componentName: 'App',
-      moduleName: 'ngModule',
-      injectProviders: this.injectProviders,
-    });
+  private emitLoadFailure(): void {
+    this.loadedEvent.emit(false);
   }
 }

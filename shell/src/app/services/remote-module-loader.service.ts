@@ -1,4 +1,4 @@
-import { Injectable, Injector, NgModuleRef, Type, createNgModule } from '@angular/core';
+import { Injectable } from '@angular/core';
 import { loadRemoteModule } from '@angular-architects/module-federation';
 import { FederatedLoaderConfig } from './federated-contract';
 
@@ -13,13 +13,6 @@ export type RemoteModuleLoadConfig = Pick<FederatedLoaderConfig, 'remoteEntry' |
   providedIn: 'root',
 })
 export class RemoteModuleLoader {
-  createRemoteNgModuleRef(
-    moduleType: Type<unknown>,
-    parentInjector?: Injector,
-  ): NgModuleRef<unknown> {
-    return parentInjector ? createNgModule(moduleType, parentInjector) : createNgModule(moduleType);
-  }
-
   async loadRemoteModule(config: RemoteModuleLoadConfig): Promise<Record<string, unknown>> {
     return loadRemoteModule({
       type: 'module',
