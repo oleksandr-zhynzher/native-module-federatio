@@ -7,7 +7,7 @@ import {
   OnDestroy,
   OnInit,
   Output,
-  SimpleChanges,
+  SimpleChange,
   ViewContainerRef,
   inject,
 } from '@angular/core';
@@ -18,47 +18,73 @@ import {
 } from '../services/federated-component-facade.service';
 import { FederatedLoaderConfigInput } from '../services/federated-contract';
 
+type ComponentChanges<T extends object> = Partial<Record<keyof T, SimpleChange>>;
+
 @Directive({
-  selector: '[remoteComponentRenderer], [appDynamicFederatedLoader]',
+  selector: '[appDynamicFederatedLoader]',
 })
 export class RemoteComponentRenderer implements OnInit, OnChanges, OnDestroy {
-  @Input() config?: FederatedLoaderConfigInput;
-  @Input() componentInputs: Record<string, unknown> = {};
-  @Input() injectProviders = false;
-
-  @Output() loadedEvent = new EventEmitter<boolean>();
-  @Output() destroyedEvent = new EventEmitter<boolean>();
-
-  private viewContainerRef = inject(ViewContainerRef);
-  private injector = inject(Injector);
   private facade = inject(FederatedComponentFacadeService);
+  private injector = inject(Injector);
+  private viewContainerRef = inject(ViewContainerRef);
 
-  private mountedComponent?: LoadedFederatedComponent;
+  @Input() declare public componentInputs: Record<string, unknown>;
+  @Input() declare public config: FederatedLoaderConfigInput;
+  @Input() declare public injectProviders: boolean;
+
+  @Output() public readonly destroyedEvent = new EventEmitter<boolean>();
+  @Output() public readonly loadedEvent = new EventEmitter<boolean>();
+
   private initialized = false;
+  private mountedComponent?: LoadedFederatedComponent;
 
-  ngOnInit(): void {
-    this.initialized = true;
+  public ngOnInit(): void {
     void this.loadComponent();
   }
 
-  async ngOnChanges(changes: SimpleChanges): Promise<void> {
+  public ngOnChanges(changes: ComponentChanges<RemoteComponentRenderer>): void {
     if (!this.initialized) {
       return;
     }
 
-    if (changes['componentInputs'] && !changes['componentInputs'].firstChange) {
+    if (changes.componentInputs && !changes.componentInputs.firstChange) {
       this.applyInputs();
-    }
-
-    if (
-      changes['config'] ||
-      changes['injectProviders']
-    ) {
-      await this.loadComponent();
     }
   }
 
-  async loadComponent(): Promise<void> {
+  public ngOnDestroy(): void {
+    if (this.mountedComponent) {
+      this.destroyedEvent.emit(true);
+    }
+    this.cleanup();
+  }
+
+  private applyInputs(): void {
+    if (!this.mountedComponent?.componentRef) {
+      return;
+    }
+
+    for (const [key, value] of Object.entries(this.componentInputs || {})) {
+      try {
+        this.mountedComponent.componentRef.setInput(key, value);
+      } catch (error) {
+        console.error(error);
+
+        console.warn(
+          `Failed to set input '${key}' on component '${this.mountedComponent.componentName}':`,
+          error,
+        );
+      }
+    }
+  }
+
+  private cleanup(): void {
+    this.mountedComponent?.destroy();
+    this.viewContainerRef.clear();
+    this.mountedComponent = undefined;
+  }
+
+  private async loadComponent(): Promise<void> {
     const resolved = this.resolveConfig();
 
     this.cleanup();
@@ -81,9 +107,14 @@ export class RemoteComponentRenderer implements OnInit, OnChanges, OnDestroy {
       );
       if (!loaded.ok) {
         this.loadedEvent.emit(false);
+        const loadError = (loaded as { ok: false; error: { cause?: unknown; message?: string } })
+          .error;
+
+        console.log(loadError.cause);
+
         console.warn(
-          `Failed to load remote component '${resolved.componentName}' from '${resolved.exposedModule}': ${loaded.error.message}`,
-          loaded.error,
+          `Failed to load remote component '${resolved.componentName}' from '${resolved.exposedModule}': ${loadError.message ?? ''}`,
+          loadError,
         );
         return;
       }
@@ -91,43 +122,15 @@ export class RemoteComponentRenderer implements OnInit, OnChanges, OnDestroy {
       this.mountedComponent = loaded.value;
 
       this.applyInputs();
+      this.initialized = true;
       this.loadedEvent.emit(true);
     } catch (error) {
       this.loadedEvent.emit(false);
+      console.error(error);
       console.warn(
         `Failed to load remote component '${resolved.componentName}' from '${resolved.exposedModule}':`,
         error,
       );
-    }
-  }
-
-  ngOnDestroy(): void {
-    if (this.mountedComponent) {
-      this.destroyedEvent.emit(true);
-    }
-    this.cleanup();
-  }
-
-  private cleanup(): void {
-    this.mountedComponent?.destroy();
-    this.viewContainerRef.clear();
-    this.mountedComponent = undefined;
-  }
-
-  private applyInputs(): void {
-    if (!this.mountedComponent?.componentRef) {
-      return;
-    }
-
-    for (const [key, value] of Object.entries(this.componentInputs || {})) {
-      try {
-        this.mountedComponent.componentRef.setInput(key, value);
-      } catch (error) {
-        console.warn(
-          `Failed to set input '${key}' on component '${this.mountedComponent.componentName}':`,
-          error,
-        );
-      }
     }
   }
 

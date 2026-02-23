@@ -13,10 +13,29 @@ export interface RemoteServiceConfig {
 export class RemoteServiceLoader {
   private httpClient = inject(HttpClient);
 
+  /**
+   * Loads a remote module without instantiating a service
+   * Useful for accessing multiple exports from a module
+   * @param config Remote module configuration
+   * @returns Promise resolving to the module exports
+   */
+  async loadModule(config: RemoteServiceConfig): Promise<any> {
+    try {
+      return await loadRemoteModule({
+        type: 'module',
+        remoteEntry: config.remoteEntry,
+        exposedModule: config.exposedModule,
+      });
+    } catch (error) {
+      console.error('Error loading remote module:', error);
+      throw error;
+    }
+  }
+
   async loadService<T = any>(
     config: RemoteServiceConfig,
     serviceName: string,
-    dependencies: any[] = []
+    dependencies: any[] = [],
   ): Promise<T> {
     try {
       const serviceModule = await loadRemoteModule({
@@ -38,25 +57,6 @@ export class RemoteServiceLoader {
       return new ServiceClass(...dependencies) as T;
     } catch (error) {
       console.error(`Error loading remote service '${serviceName}':`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Loads a remote module without instantiating a service
-   * Useful for accessing multiple exports from a module
-   * @param config Remote module configuration
-   * @returns Promise resolving to the module exports
-   */
-  async loadModule(config: RemoteServiceConfig): Promise<any> {
-    try {
-      return await loadRemoteModule({
-        type: 'module',
-        remoteEntry: config.remoteEntry,
-        exposedModule: config.exposedModule,
-      });
-    } catch (error) {
-      console.error('Error loading remote module:', error);
       throw error;
     }
   }

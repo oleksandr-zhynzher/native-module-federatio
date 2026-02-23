@@ -85,6 +85,17 @@ export function isNgModuleType(value: unknown): value is Type<unknown> {
   return typeof value === 'function' && Boolean((value as { ɵmod?: unknown }).ɵmod);
 }
 
+export function isModuleWithProviders(
+  value: unknown,
+): value is { ngModule: Type<unknown>; providers?: (Provider | EnvironmentProviders)[] } {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const candidate = value as { ngModule?: unknown; providers?: unknown };
+  return isNgModuleType(candidate.ngModule);
+}
+
 export function isValidProvidersArray(
   value: unknown,
 ): value is (Provider | EnvironmentProviders)[] {

@@ -27,7 +27,7 @@ import { RemoteComponentRenderer } from '../../directives/remote-component-rende
           Current component: <strong>{{ currentComponent }}</strong>
         </p>
         <ng-container
-          remoteComponentRenderer
+          appDynamicFederatedLoader
           [config]="{
             remoteEntry: 'http://localhost:4300/remoteEntry.js',
             exposedModule: './public-api',
@@ -99,16 +99,9 @@ import { RemoteComponentRenderer } from '../../directives/remote-component-rende
   ],
 })
 export class HomeComponent {
-  @ViewChild(RemoteComponentRenderer) remoteComponentRenderer!: RemoteComponentRenderer;
-
   currentComponent = 'App';
 
-  async loadComponent(componentName: string) {
+  loadComponent(componentName: string) {
     this.currentComponent = componentName;
-    // Give Angular time to update the input binding
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    if (this.remoteComponentRenderer) {
-      await this.remoteComponentRenderer.loadComponent();
-    }
   }
 }

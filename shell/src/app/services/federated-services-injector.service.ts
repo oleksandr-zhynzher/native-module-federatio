@@ -25,7 +25,7 @@ export class FederatedServicesInjectorService {
   ): Observable<Result<FederatedServiceHandle<T>>> {
     return this.providersInjector.loadModule$(config, injectProviders).pipe(
       map(({ module: federatedModule, ownedInjector }) => {
-        const exported = federatedModule?.[serviceName];
+        const exported = federatedModule[serviceName];
 
         if (!exported) {
           ownedInjector.destroy();
@@ -49,7 +49,9 @@ export class FederatedServicesInjectorService {
           return okResult({
             service,
             ownedInjector,
-            destroy: () => ownedInjector.destroy(),
+            destroy: () => {
+              ownedInjector.destroy();
+            },
           });
         } catch (error) {
           ownedInjector.destroy();

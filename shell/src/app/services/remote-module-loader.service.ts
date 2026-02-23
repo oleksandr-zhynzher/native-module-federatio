@@ -13,20 +13,18 @@ export type RemoteModuleLoadConfig = Pick<FederatedLoaderConfig, 'remoteEntry' |
   providedIn: 'root',
 })
 export class RemoteModuleLoader {
+  createRemoteNgModuleRef(
+    moduleType: Type<unknown>,
+    parentInjector?: Injector,
+  ): NgModuleRef<unknown> {
+    return parentInjector ? createNgModule(moduleType, parentInjector) : createNgModule(moduleType);
+  }
+
   async loadRemoteModule(config: RemoteModuleLoadConfig): Promise<Record<string, unknown>> {
     return loadRemoteModule({
       type: 'module',
       remoteEntry: config.remoteEntry,
       exposedModule: config.exposedModule,
-    }) as Promise<Record<string, unknown>>;
-  }
-
-  createRemoteNgModuleRef(
-    moduleType: Type<unknown>,
-    parentInjector?: Injector,
-  ): NgModuleRef<unknown> {
-    return parentInjector
-      ? createNgModule(moduleType, parentInjector)
-      : createNgModule(moduleType);
+    });
   }
 }

@@ -27,19 +27,6 @@ export interface FederatedLoadResult {
 
 @Injectable({ providedIn: 'root' })
 export class FederatedProvidersInjectorService {
-  private readonly environmentInjector = inject(EnvironmentInjector);
-  private readonly remoteModuleLoader = inject(RemoteModuleLoader);
-
-  injectProviders(federatedModule: FederatedModule): EnvironmentInjector {
-    const providers = federatedModule?.providers;
-
-    if (!providers || providers.length === 0) {
-      return this.environmentInjector;
-    }
-
-    return createEnvironmentInjector(providers, this.environmentInjector);
-  }
-
   createOwnedInjector(
     federatedModule: FederatedModule,
     injectProviders = true,
@@ -81,6 +68,17 @@ export class FederatedProvidersInjectorService {
     };
   }
 
+  private readonly environmentInjector = inject(EnvironmentInjector);
+  injectProviders(federatedModule: FederatedModule): EnvironmentInjector {
+    const providers = federatedModule.providers;
+
+    if (!providers || providers.length === 0) {
+      return this.environmentInjector;
+    }
+
+    return createEnvironmentInjector(providers, this.environmentInjector);
+  }
+
   loadModule$(
     config: RemoteModuleConfig,
     injectProviders = true,
@@ -96,4 +94,6 @@ export class FederatedProvidersInjectorService {
       }),
     );
   }
+
+  private readonly remoteModuleLoader = inject(RemoteModuleLoader);
 }

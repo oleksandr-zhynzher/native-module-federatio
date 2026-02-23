@@ -1,29 +1,31 @@
 import {
   ComponentRef,
-  EnvironmentInjector,
+  EnvironmentProviders,
   Injectable,
   Injector,
   NgModuleRef,
+  Provider,
   Type,
   ViewContainerRef,
 } from '@angular/core';
-import { RemoteModuleLoader } from './remote-module-loader.service';
-import {
-  FederatedOwnedInjector,
-  FederatedModule,
-  FederatedProvidersInjectorService,
-} from './federated-providers-injector.service';
 import {
   errorResult,
   FederatedLoaderConfig,
   FederatedLoaderConfigInput,
   Result,
   isComponentType,
+  isModuleWithProviders,
   isNgModuleType,
   isValidProvidersArray,
   normalizeFederatedConfig,
   okResult,
 } from './federated-contract';
+import {
+  FederatedOwnedInjector,
+  FederatedModule,
+  FederatedProvidersInjectorService,
+} from './federated-providers-injector.service';
+import { RemoteModuleLoader } from './remote-module-loader.service';
 
 export interface ResolvedFederatedConfig {
   remoteEntry: string;
@@ -49,19 +51,36 @@ export class FederatedComponentFacadeService {
     private readonly providersInjector: FederatedProvidersInjectorService,
   ) {}
 
-  resolveConfig(
-    config: FederatedLoaderConfigInput | undefined,
-    fallback: FederatedLoaderConfig,
-  ): ResolvedFederatedConfig {
-    const normalized = normalizeFederatedConfig(config, fallback);
+  private createOwnedInjector(
+    remoteExports: FederatedModule,
+    injectProviders: boolean,
+    moduleProviders: (Provider | EnvironmentProviders)[] = [],
+  ): Result<FederatedOwnedInjector> {
+    let providersToInject: (Provider | EnvironmentProviders)[] = [...moduleProviders];
 
-    return {
-      remoteEntry: normalized.remoteEntry,
-      exposedModule: normalized.exposedModule,
-      componentName: normalized.componentName,
-      moduleName: normalized.moduleName,
-      injectProviders: normalized.injectProviders,
+    if (injectProviders && remoteExports.providers) {
+      providersToInject = [...providersToInject, ...remoteExports.providers];
+    }
+
+    if (providersToInject.length === 0) {
+      return okResult(this.providersInjector.createOwnedInjector(remoteExports, false));
+    }
+
+    if (!isValidProvidersArray(providersToInject)) {
+      return errorResult({
+        code: 'INVALID_PROVIDERS_EXPORT',
+        message:
+          'Remote module exported invalid providers format. Expected an array of Provider or EnvironmentProviders.',
+        details: { providers: providersToInject },
+      });
+    }
+
+    const moduleWithCombinedProviders = {
+      ...remoteExports,
+      providers: providersToInject,
     };
+
+    return okResult(this.providersInjector.createOwnedInjector(moduleWithCombinedProviders, true));
   }
 
   async loadAndMountComponent(
@@ -85,12 +104,14 @@ export class FederatedComponentFacadeService {
 
     const componentTypeResult = this.resolveComponentType(remoteExports, resolved.componentName);
     if (!componentTypeResult.ok) {
-      return componentTypeResult;
+      const err = (componentTypeResult as { ok: false; error: unknown }).error;
+      return errorResult(err as any);
     }
 
     const moduleTypeResult = this.resolveModuleType(remoteExports, resolved.moduleName);
     if (!moduleTypeResult.ok) {
-      return moduleTypeResult;
+      const err = (moduleTypeResult as { ok: false; error: unknown }).error;
+      return errorResult(err as any);
     }
 
     let moduleRef: NgModuleRef<unknown> | undefined;
@@ -98,22 +119,29 @@ export class FederatedComponentFacadeService {
     let componentRef: ComponentRef<unknown> | undefined;
 
     try {
-      moduleRef = this.remoteModuleLoader.createRemoteNgModuleRef(moduleTypeResult.value, hostInjector);
+      const moduleProviders = moduleTypeResult.value.providers || [];
 
       const injectorResult = this.createOwnedInjector(
         remoteExports as FederatedModule,
         resolved.injectProviders,
+        moduleProviders,
       );
       if (!injectorResult.ok) {
-        moduleRef.destroy();
-        return injectorResult;
+        const err = (injectorResult as { ok: false; error: unknown }).error;
+
+        return errorResult(err as any);
       }
 
       ownedInjector = injectorResult.value;
 
+      moduleRef = this.remoteModuleLoader.createRemoteNgModuleRef(
+        moduleTypeResult.value.ngModule,
+        ownedInjector.injector,
+      );
+
       componentRef = viewContainerRef.createComponent(componentTypeResult.value, {
         ngModuleRef: moduleRef,
-        injector: ownedInjector.injector,
+        injector: moduleRef.injector,
       });
     } catch (error) {
       componentRef?.destroy();
@@ -148,35 +176,6 @@ export class FederatedComponentFacadeService {
     });
   }
 
-  private createOwnedInjector(
-    remoteExports: FederatedModule,
-    injectProviders: boolean,
-  ): Result<FederatedOwnedInjector> {
-    if (!injectProviders) {
-      return okResult(this.providersInjector.createOwnedInjector(remoteExports, false));
-    }
-
-    const providers = remoteExports.providers;
-    if (!providers) {
-      return okResult(this.providersInjector.createOwnedInjector(remoteExports, true));
-    }
-
-    if (!isValidProvidersArray(providers)) {
-      return errorResult({
-        code: 'INVALID_PROVIDERS_EXPORT',
-        message:
-          'Remote module exported invalid providers format. Expected an array of Provider or EnvironmentProviders.',
-        details: { providers },
-      });
-    }
-
-    if (providers.length === 0) {
-      return okResult(this.providersInjector.createOwnedInjector(remoteExports, true));
-    }
-
-    return okResult(this.providersInjector.createOwnedInjector(remoteExports, true));
-  }
-
   private resolveComponentType(
     remoteExports: Record<string, unknown>,
     name: string,
@@ -201,26 +200,59 @@ export class FederatedComponentFacadeService {
     return okResult(candidate);
   }
 
+  resolveConfig(
+    config: FederatedLoaderConfigInput | undefined,
+    fallback: FederatedLoaderConfig,
+  ): ResolvedFederatedConfig {
+    const normalized = normalizeFederatedConfig(config, fallback);
+
+    return {
+      remoteEntry: normalized.remoteEntry,
+      exposedModule: normalized.exposedModule,
+      componentName: normalized.componentName,
+      moduleName: normalized.moduleName,
+      injectProviders: normalized.injectProviders,
+    };
+  }
+
   private resolveModuleType(
     remoteExports: Record<string, unknown>,
     name: string,
-  ): Result<Type<unknown>> {
+  ): Result<{ ngModule: Type<unknown>; providers?: (Provider | EnvironmentProviders)[] }> {
     const candidate = remoteExports[name];
 
     if (!candidate) {
+      // If moduleName is not found, try to find a module in the exports
+      const moduleExport = Object.values(remoteExports).find(
+        (exp) => isNgModuleType(exp) || isModuleWithProviders(exp),
+      );
+
+      if (moduleExport) {
+        if (isNgModuleType(moduleExport)) {
+          return okResult({ ngModule: moduleExport });
+        }
+        if (isModuleWithProviders(moduleExport)) {
+          return okResult({ ngModule: moduleExport.ngModule, providers: moduleExport.providers });
+        }
+      }
+
       return errorResult({
         code: 'MODULE_NOT_FOUND',
         message: `Module '${name}' not found in remote exports.`,
       });
     }
 
-    if (!isNgModuleType(candidate)) {
-      return errorResult({
-        code: 'INVALID_MODULE_EXPORT',
-        message: `Export '${name}' is not an Angular NgModule type.`,
-      });
+    if (isNgModuleType(candidate)) {
+      return okResult({ ngModule: candidate });
     }
 
-    return okResult(candidate);
+    if (isModuleWithProviders(candidate)) {
+      return okResult({ ngModule: candidate.ngModule, providers: candidate.providers });
+    }
+
+    return errorResult({
+      code: 'INVALID_MODULE_EXPORT',
+      message: `Export '${name}' is not an Angular NgModule type or ModuleWithProviders.`,
+    });
   }
 }
