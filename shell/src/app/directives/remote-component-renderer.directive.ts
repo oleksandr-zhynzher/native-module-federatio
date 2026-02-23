@@ -1,65 +1,143 @@
 import {
   Directive,
+  EventEmitter,
+  Injector,
   Input,
+  OnChanges,
+  OnDestroy,
+  OnInit,
+  Output,
+  SimpleChanges,
   ViewContainerRef,
   inject,
-  EnvironmentInjector,
-  createEnvironmentInjector,
 } from '@angular/core';
-import { loadRemoteModule } from '@angular-architects/module-federation';
+import {
+  FederatedComponentFacadeService,
+  LoadedFederatedComponent,
+  ResolvedFederatedConfig,
+} from '../services/federated-component-facade.service';
+import { FederatedLoaderConfigInput } from '../services/federated-contract';
 
 @Directive({
-  selector: '[remoteComponentRenderer]',
-  standalone: true,
+  selector: '[remoteComponentRenderer], [appDynamicFederatedLoader]',
 })
-export class RemoteComponentRenderer {
-  @Input() remoteEntry!: string;
-  @Input() exposedModule!: string;
-  @Input() componentName: string = 'App';
-  @Input() initializeStore: boolean = false;
+export class RemoteComponentRenderer implements OnInit, OnChanges, OnDestroy {
+  @Input() config?: FederatedLoaderConfigInput;
+  @Input() componentInputs: Record<string, unknown> = {};
+  @Input() injectProviders = false;
+
+  @Output() loadedEvent = new EventEmitter<boolean>();
+  @Output() destroyedEvent = new EventEmitter<boolean>();
 
   private viewContainerRef = inject(ViewContainerRef);
-  private environmentInjector = inject(EnvironmentInjector);
+  private injector = inject(Injector);
+  private facade = inject(FederatedComponentFacadeService);
 
-  async loadComponent() {
+  private mountedComponent?: LoadedFederatedComponent;
+  private initialized = false;
+
+  ngOnInit(): void {
+    this.initialized = true;
+    void this.loadComponent();
+  }
+
+  async ngOnChanges(changes: SimpleChanges): Promise<void> {
+    if (!this.initialized) {
+      return;
+    }
+
+    if (changes['componentInputs'] && !changes['componentInputs'].firstChange) {
+      this.applyInputs();
+    }
+
+    if (
+      changes['config'] ||
+      changes['injectProviders']
+    ) {
+      await this.loadComponent();
+    }
+  }
+
+  async loadComponent(): Promise<void> {
+    const resolved = this.resolveConfig();
+
+    this.cleanup();
+
+    if (
+      !resolved.remoteEntry ||
+      !resolved.exposedModule ||
+      !resolved.componentName ||
+      !resolved.moduleName
+    ) {
+      this.loadedEvent.emit(false);
+      return;
+    }
+
     try {
-      this.viewContainerRef.clear();
-
-      const [publicApi, storeModule] = await Promise.all([
-        loadRemoteModule({
-          type: 'module',
-          remoteEntry: this.remoteEntry,
-          exposedModule: this.exposedModule,
-        }),
-        loadRemoteModule({
-          type: 'module',
-          remoteEntry: this.remoteEntry,
-          exposedModule: this.exposedModule,
-        }),
-      ]);
-
-      const componentType = publicApi.REMOTE_COMPONENTS?.[this.componentName];
-
-      if (!componentType) {
-        console.error(
-          `Component '${this.componentName}' not found in remote module. Available components:`,
-          Object.keys(publicApi.REMOTE_COMPONENTS || {}),
+      const loaded = await this.facade.loadAndMountComponent(
+        resolved,
+        this.injector,
+        this.viewContainerRef,
+      );
+      if (!loaded.ok) {
+        this.loadedEvent.emit(false);
+        console.warn(
+          `Failed to load remote component '${resolved.componentName}' from '${resolved.exposedModule}': ${loaded.error.message}`,
+          loaded.error,
         );
         return;
       }
 
-      let injectorToUse = this.environmentInjector;
+      this.mountedComponent = loaded.value;
 
-      if (this.initializeStore) {
-        const storeProviders = storeModule.provideRemoteStore();
-        injectorToUse = createEnvironmentInjector(storeProviders, this.environmentInjector);
-      }
-
-      const componentRef = this.viewContainerRef.createComponent(componentType, {
-        environmentInjector: injectorToUse,
-      });
+      this.applyInputs();
+      this.loadedEvent.emit(true);
     } catch (error) {
-      console.error('Error loading remote component:', error);
+      this.loadedEvent.emit(false);
+      console.warn(
+        `Failed to load remote component '${resolved.componentName}' from '${resolved.exposedModule}':`,
+        error,
+      );
     }
+  }
+
+  ngOnDestroy(): void {
+    if (this.mountedComponent) {
+      this.destroyedEvent.emit(true);
+    }
+    this.cleanup();
+  }
+
+  private cleanup(): void {
+    this.mountedComponent?.destroy();
+    this.viewContainerRef.clear();
+    this.mountedComponent = undefined;
+  }
+
+  private applyInputs(): void {
+    if (!this.mountedComponent?.componentRef) {
+      return;
+    }
+
+    for (const [key, value] of Object.entries(this.componentInputs || {})) {
+      try {
+        this.mountedComponent.componentRef.setInput(key, value);
+      } catch (error) {
+        console.warn(
+          `Failed to set input '${key}' on component '${this.mountedComponent.componentName}':`,
+          error,
+        );
+      }
+    }
+  }
+
+  private resolveConfig(): ResolvedFederatedConfig {
+    return this.facade.resolveConfig(this.config, {
+      remoteEntry: '',
+      exposedModule: './public-api',
+      componentName: 'App',
+      moduleName: 'ngModule',
+      injectProviders: this.injectProviders,
+    });
   }
 }

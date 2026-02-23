@@ -1,0 +1,50 @@
+<div class="container">
+  <h1>{{ config.title }}</h1>
+  <p class="subtitle">{{ config.subtitle }}</p>
+
+  <div class="controls">
+    <button mat-raised-button color="primary" (click)="loadUsers()">Reload Users</button>
+  </div>
+
+  <div *ngIf="loading$ | async" class="loading">
+    <mat-spinner diameter="40"></mat-spinner>
+    <div>Loading users from API...</div>
+  </div>
+
+  <div class="error" *ngIf="error$ | async as error">{{ error }}</div>
+
+  <div class="users-grid" *ngIf="users$ | async as users">
+    <mat-card class="user-card" *ngFor="let user of users" (click)="selectUser(user.id)">
+      <mat-card-title>{{ user.name }}</mat-card-title>
+      <mat-card-subtitle>@{{ user.username }}</mat-card-subtitle>
+      <mat-card-content>
+        <div class="user-info">
+          <mat-icon>mail</mat-icon>
+          <span>{{ user.email }}</span>
+        </div>
+        <div class="user-info">
+          <mat-icon>call</mat-icon>
+          <span>{{ user.phone }}</span>
+        </div>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+  <mat-card class="selected-user" *ngIf="selectedUser$ | async as user">
+    <h2>👤 Selected User Details</h2>
+    <div class="detail"><span class="label">Full Name:</span> {{ user.name }}</div>
+    <div class="detail"><span class="label">Username:</span> {{ user.username }}</div>
+    <div class="detail"><span class="label">Email:</span> {{ user.email }}</div>
+    <div class="detail"><span class="label">Phone:</span> {{ user.phone }}</div>
+    <div class="detail"><span class="label">Website:</span> {{ user.website }}</div>
+
+    <div class="company-section">
+      <h3>🏢 Company Information</h3>
+      <div class="detail"><span class="label">Name:</span> {{ user.company.name }}</div>
+      <div class="detail"><span class="label">Catch Phrase:</span> {{ user.company.catchPhrase }}</div>
+      <div class="detail"><span class="label">BS:</span> {{ user.company.bs }}</div>
+    </div>
+  </mat-card>
+
+  <app-user-insights></app-user-insights>
+</div>

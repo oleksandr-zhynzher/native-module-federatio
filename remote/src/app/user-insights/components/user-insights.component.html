@@ -1,0 +1,9 @@
+<mat-card class="insights-card">
+  <h3>{{ configTitle }}</h3>
+
+  <div *ngIf="loading$ | async" class="loading">Loading insights...</div>
+
+  <ul *ngIf="insights$ | async as insights" class="insights-list">
+    <li *ngFor="let insight of insights">{{ insight }}</li>
+  </ul>
+</mat-card>
