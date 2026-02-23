@@ -9,16 +9,16 @@ import {
   inject,
 } from '@angular/core';
 import {
-  FederatedComponentMountService,
+  FederatedLoaderService,
   LoadedFederatedComponent,
-} from '../services/federated-component-mount.service';
-import { FederatedLoaderConfig } from '../services/federated-contract';
+  FederatedLoaderConfig,
+} from '../services/federated-loader.service';
 
 @Directive({
   selector: '[appDynamicFederatedLoader]',
 })
 export class RemoteComponentRenderer implements OnDestroy {
-  private componentMountService = inject(FederatedComponentMountService);
+  private componentMountService = inject(FederatedLoaderService);
   private viewContainerRef = inject(ViewContainerRef);
 
   public readonly componentInputs = input<Record<string, unknown>>({});
