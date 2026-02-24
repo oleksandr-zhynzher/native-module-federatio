@@ -1,110 +1,85 @@
 import {
   DestroyRef,
   Directive,
-  EventEmitter,
-  Output,
+  OnDestroy,
+  OnInit,
   ViewContainerRef,
   effect,
   inject,
   input,
+  output,
+  signal,
+  untracked,
 } from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
-import { EMPTY, catchError, switchMap } from 'rxjs';
-import {
-  FederatedLoaderConfig,
-  FederatedLoaderService,
-  MountedComponent,
-} from '../services/federated-loader.service';
+import { EMPTY, catchError, switchMap, tap } from 'rxjs';
+
+import { RyLoadRemoteModuleOptions, RemoteComponentRef } from '../models';
+import { FederatedComponentLoaderService } from '../services';
 
 @Directive({
   selector: '[appDynamicFederatedLoader]',
 })
-export class RemoteComponentRenderer {
-  private readonly componentMountService = inject(FederatedLoaderService);
-  private readonly viewContainerRef = inject(ViewContainerRef);
+export class RemoteComponentRenderer implements OnInit, OnDestroy {
   private readonly destroyRef = inject(DestroyRef);
+  private readonly federatedComponentLoader = inject(FederatedComponentLoaderService);
+  private readonly viewContainerRef = inject(ViewContainerRef);
 
   public readonly componentInputs = input<Record<string, unknown>>({});
-  public readonly config = input<FederatedLoaderConfig | null>(null);
+  public readonly config = input.required<RyLoadRemoteModuleOptions>();
 
-  @Output() public readonly destroyedEvent = new EventEmitter<boolean>();
-  @Output() public readonly loadedEvent = new EventEmitter<boolean>();
+  public readonly destroyedEvent = output<boolean>();
+  public readonly loadedEvent = output<boolean>();
 
-  private mountedComponent?: MountedComponent;
+  private readonly remoteComponent = signal<RemoteComponentRef | undefined>(undefined);
 
   constructor() {
-    this.setupConfigStream();
-    this.setupInputsEffect();
-
-    this.destroyRef.onDestroy(() => {
-      if (this.mountedComponent) {
-        this.destroyedEvent.emit(true);
-      }
-      this.cleanup();
+    effect(() => {
+      this.applyInputs();
     });
   }
 
-  private setupConfigStream(): void {
+  public ngOnInit(): void {
     toObservable(this.config)
       .pipe(
-        switchMap((config) => {
-          if (!config || !this.isValidConfig(config)) {
-            const wasActive = this.mountedComponent != null;
-            this.cleanup();
-            if (wasActive) {
-              this.emitLoadFailure();
-            }
-            return EMPTY;
-          }
-
-          this.cleanup();
-
-          return this.componentMountService.loadAndMountComponent(config, this.viewContainerRef).pipe(
+        takeUntilDestroyed(this.destroyRef),
+        tap(() => this.cleanup()),
+        switchMap((config) =>
+          this.federatedComponentLoader.getRemoteComponent(config, this.viewContainerRef).pipe(
             catchError((error) => {
-              console.warn(
-                `Failed to load remote component '${config.componentName}' from '${config.exposedModule}':`,
-                error,
-              );
               this.emitLoadFailure();
+              console.warn('error = ', error);
               return EMPTY;
             }),
-          );
-        }),
-        takeUntilDestroyed(this.destroyRef),
+          ),
+        ),
       )
-      .subscribe((loaded) => {
-        this.mountedComponent = loaded;
-        this.applyInputs(this.componentInputs());
+      .subscribe((component) => {
+        this.remoteComponent.set(component);
         this.loadedEvent.emit(true);
       });
   }
 
-  private setupInputsEffect(): void {
-    effect(() => {
-      this.applyInputs(this.componentInputs());
-    });
+  public ngOnDestroy(): void {
+    this.cleanup();
   }
 
-  private isValidConfig(config: FederatedLoaderConfig): boolean {
-    return !!(
-      config.remoteEntry &&
-      config.exposedModule &&
-      config.componentName &&
-      config.moduleName
-    );
-  }
+  private applyInputs(): void {
+    const component = this.remoteComponent();
+    const inputs = this.componentInputs();
 
-  private applyInputs(inputs: Record<string, unknown>): void {
-    if (!this.mountedComponent) {
+    if (!component) {
       return;
     }
 
+    const config = untracked(() => this.config());
+
     for (const [key, value] of Object.entries(inputs)) {
       try {
-        this.mountedComponent.setInput(key, value);
+        component.componentRef.setInput(key, value);
       } catch (error) {
         console.warn(
-          `Failed to set input '${key}' on component '${this.mountedComponent.componentName}':`,
+          `Failed to set input '${key}' on component '${config.componentName ?? ''}':`,
           error,
         );
       }
@@ -112,9 +87,15 @@ export class RemoteComponentRenderer {
   }
 
   private cleanup(): void {
-    this.mountedComponent?.destroy();
+    const component = this.remoteComponent();
+
+    if (component) {
+      this.destroyedEvent.emit(true);
+      component.destroy();
+      this.remoteComponent.set(undefined);
+    }
+
     this.viewContainerRef.clear();
-    this.mountedComponent = undefined;
   }
 
   private emitLoadFailure(): void {
