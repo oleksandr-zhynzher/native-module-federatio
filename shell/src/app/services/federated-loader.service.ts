@@ -1,16 +1,19 @@
 import {
-  ComponentRef,
-  EnvironmentInjector,
   Injectable,
   NgModuleRef,
   Type,
   ViewContainerRef,
-  createEnvironmentInjector,
   createNgModule,
   inject,
 } from '@angular/core';
-import { resolveComponentType, resolveModuleType } from '../utils/federated-loader.utils';
+import { Observable, map, throwError } from 'rxjs';
+import {
+  RemoteNgModuleDescriptor,
+  resolveComponentType,
+  resolveModuleType,
+} from '../utils/federated-loader.utils';
 import { FederatedModuleFacadeService } from './federated-module-facade.service';
+import { OwnedInjector, RemoteInjectorFactory } from './remote-injector-factory.service';
 
 export interface FederatedLoaderConfig {
   remoteEntry: string;
@@ -19,85 +22,86 @@ export interface FederatedLoaderConfig {
   moduleName?: string;
 }
 
-export interface LoadedFederatedComponent {
-  componentName: string;
-  componentType: Type<unknown>;
-  componentRef: ComponentRef<unknown>;
-  moduleRef: NgModuleRef<unknown>;
-  ownedInjector: { injector: EnvironmentInjector; destroy(): void };
+export interface MountedComponent {
+  readonly componentName: string;
+  setInput(key: string, value: unknown): void;
   destroy(): void;
+}
+
+interface ResolvedRemoteTypes {
+  componentType: Type<unknown>;
+  moduleDescriptor: RemoteNgModuleDescriptor;
 }
 
 @Injectable({ providedIn: 'root' })
 export class FederatedLoaderService {
-  private environmentInjector = inject(EnvironmentInjector);
-  private moduleFacade = inject(FederatedModuleFacadeService);
+  private readonly moduleFacade = inject(FederatedModuleFacadeService);
+  private readonly injectorFactory = inject(RemoteInjectorFactory);
 
-  async loadAndMountComponent(
+  loadAndMountComponent(
     config: FederatedLoaderConfig,
     viewContainerRef: ViewContainerRef,
-  ): Promise<LoadedFederatedComponent | null> {
+  ): Observable<MountedComponent> {
     if (!config.componentName || !config.moduleName) {
-      console.warn('componentName and moduleName are required to mount a component.');
-      return null;
+      return throwError(() => new Error('componentName and moduleName are required to mount a component.'));
     }
 
-    const remoteExports = await this.moduleFacade.loadModule(config);
-    if (!remoteExports) return null;
+    return this.resolveRemoteTypes(config, config.componentName, config.moduleName).pipe(
+      map((resolved) => this.mountComponent(config.componentName!, resolved, viewContainerRef)),
+    );
+  }
 
-    const componentType = resolveComponentType(remoteExports, config.componentName);
-    if (!componentType) return null;
+  private resolveRemoteTypes(
+    config: FederatedLoaderConfig,
+    componentName: string,
+    moduleName: string,
+  ): Observable<ResolvedRemoteTypes> {
+    return this.moduleFacade.loadModule(config).pipe(
+      map((remoteExports) => {
+        const componentType = resolveComponentType(remoteExports, componentName);
+        if (!componentType) {
+          throw new Error(`Component '${componentName}' not found or is not a valid Angular component.`);
+        }
 
-    const moduleTypeResult = resolveModuleType(remoteExports, config.moduleName);
-    if (!moduleTypeResult) return null;
+        const moduleDescriptor = resolveModuleType(remoteExports, moduleName);
+        if (!moduleDescriptor) {
+          throw new Error(`Module '${moduleName}' not found in remote exports.`);
+        }
 
+        return { componentType, moduleDescriptor };
+      }),
+    );
+  }
+
+  private mountComponent(
+    componentName: string,
+    { componentType, moduleDescriptor }: ResolvedRemoteTypes,
+    viewContainerRef: ViewContainerRef,
+  ): MountedComponent {
     let moduleRef: NgModuleRef<unknown> | undefined;
-    let ownedInjector: { injector: EnvironmentInjector; destroy(): void } | undefined;
-    let componentRef: ComponentRef<unknown> | undefined;
+    let ownedInjector: OwnedInjector | undefined;
 
     try {
-      const moduleProviders = moduleTypeResult.providers || [];
-      const remoteProviders = remoteExports['providers'] || [];
-      const allProviders = [...moduleProviders, ...remoteProviders];
+      ownedInjector = this.injectorFactory.create([...(moduleDescriptor.providers ?? [])]);
+      moduleRef = createNgModule(moduleDescriptor.ngModule, ownedInjector.injector);
 
-      ownedInjector = this.createOwnedInjector(allProviders);
-      moduleRef = createNgModule(moduleTypeResult.ngModule, ownedInjector.injector);
-
-      componentRef = viewContainerRef.createComponent(componentType, {
+      const componentRef = viewContainerRef.createComponent(componentType, {
         ngModuleRef: moduleRef,
-        injector: moduleRef.injector,
       });
 
       return {
-        componentName: config.componentName,
-        componentType,
-        componentRef,
-        moduleRef,
-        ownedInjector,
+        componentName,
+        setInput: (key: string, value: unknown) => componentRef.setInput(key, value),
         destroy: () => {
-          componentRef?.destroy();
+          componentRef.destroy();
           moduleRef?.destroy();
           ownedInjector?.destroy();
         },
       };
     } catch (error) {
-      componentRef?.destroy();
       moduleRef?.destroy();
       ownedInjector?.destroy();
-      console.warn(`Failed to mount remote component '${config.componentName}'.`, error);
-      return null;
+      throw error;
     }
-  }
-
-  private createOwnedInjector(providers: any[]): {
-    injector: EnvironmentInjector;
-    destroy(): void;
-  } {
-    if (!providers || providers.length === 0) {
-      return { injector: this.environmentInjector, destroy: () => {} };
-    }
-
-    const injector = createEnvironmentInjector(providers, this.environmentInjector);
-    return { injector, destroy: () => injector.destroy() };
   }
 }

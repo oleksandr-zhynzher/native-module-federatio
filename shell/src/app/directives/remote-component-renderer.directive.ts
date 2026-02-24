@@ -1,25 +1,28 @@
 import {
+  DestroyRef,
   Directive,
   EventEmitter,
-  effect,
-  input,
-  OnDestroy,
   Output,
   ViewContainerRef,
+  effect,
   inject,
+  input,
 } from '@angular/core';
+import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
+import { EMPTY, catchError, switchMap } from 'rxjs';
 import {
-  FederatedLoaderService,
-  LoadedFederatedComponent,
   FederatedLoaderConfig,
+  FederatedLoaderService,
+  MountedComponent,
 } from '../services/federated-loader.service';
 
 @Directive({
   selector: '[appDynamicFederatedLoader]',
 })
-export class RemoteComponentRenderer implements OnDestroy {
-  private componentMountService = inject(FederatedLoaderService);
-  private viewContainerRef = inject(ViewContainerRef);
+export class RemoteComponentRenderer {
+  private readonly componentMountService = inject(FederatedLoaderService);
+  private readonly viewContainerRef = inject(ViewContainerRef);
+  private readonly destroyRef = inject(DestroyRef);
 
   public readonly componentInputs = input<Record<string, unknown>>({});
   public readonly config = input<FederatedLoaderConfig | null>(null);
@@ -27,70 +30,79 @@ export class RemoteComponentRenderer implements OnDestroy {
   @Output() public readonly destroyedEvent = new EventEmitter<boolean>();
   @Output() public readonly loadedEvent = new EventEmitter<boolean>();
 
-  private destroyed = false;
-  private loadRequestId = 0;
-  private activeConfigKey: string | null = null;
-  private mountedComponent?: LoadedFederatedComponent;
+  private mountedComponent?: MountedComponent;
 
   constructor() {
-    this.setupConfigEffect();
+    this.setupConfigStream();
     this.setupInputsEffect();
+
+    this.destroyRef.onDestroy(() => {
+      if (this.mountedComponent) {
+        this.destroyedEvent.emit(true);
+      }
+      this.cleanup();
+    });
   }
 
-  private setupConfigEffect(): void {
-    effect(() => {
-      const resolved = this.config();
-      const configKey = this.createConfigKey(resolved);
+  private setupConfigStream(): void {
+    toObservable(this.config)
+      .pipe(
+        switchMap((config) => {
+          if (!config || !this.isValidConfig(config)) {
+            const wasActive = this.mountedComponent != null;
+            this.cleanup();
+            if (wasActive) {
+              this.emitLoadFailure();
+            }
+            return EMPTY;
+          }
 
-      if (!resolved || !configKey) {
-        this.handleInvalidConfig();
-        return;
-      }
+          this.cleanup();
 
-      if (configKey === this.activeConfigKey) {
-        return;
-      }
-
-      this.activeConfigKey = configKey;
-      void this.loadComponent(resolved);
-    });
+          return this.componentMountService.loadAndMountComponent(config, this.viewContainerRef).pipe(
+            catchError((error) => {
+              console.warn(
+                `Failed to load remote component '${config.componentName}' from '${config.exposedModule}':`,
+                error,
+              );
+              this.emitLoadFailure();
+              return EMPTY;
+            }),
+          );
+        }),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe((loaded) => {
+        this.mountedComponent = loaded;
+        this.applyInputs(this.componentInputs());
+        this.loadedEvent.emit(true);
+      });
   }
 
   private setupInputsEffect(): void {
     effect(() => {
-      this.componentInputs();
-      this.applyInputs();
+      this.applyInputs(this.componentInputs());
     });
   }
 
-  public ngOnDestroy(): void {
-    this.destroyed = true;
-    this.loadRequestId += 1;
-
-    if (this.mountedComponent) {
-      this.destroyedEvent.emit(true);
-    }
-
-    this.cleanup();
+  private isValidConfig(config: FederatedLoaderConfig): boolean {
+    return !!(
+      config.remoteEntry &&
+      config.exposedModule &&
+      config.componentName &&
+      config.moduleName
+    );
   }
 
-  private handleInvalidConfig(): void {
-    this.activeConfigKey = null;
-    this.cleanup();
-    this.emitLoadFailure();
-  }
-
-  private applyInputs(): void {
-    if (!this.mountedComponent?.componentRef) {
+  private applyInputs(inputs: Record<string, unknown>): void {
+    if (!this.mountedComponent) {
       return;
     }
 
-    for (const [key, value] of Object.entries(this.componentInputs())) {
+    for (const [key, value] of Object.entries(inputs)) {
       try {
-        this.mountedComponent.componentRef.setInput(key, value);
+        this.mountedComponent.setInput(key, value);
       } catch (error) {
-        console.error(error);
-
         console.warn(
           `Failed to set input '${key}' on component '${this.mountedComponent.componentName}':`,
           error,
@@ -103,62 +115,6 @@ export class RemoteComponentRenderer implements OnDestroy {
     this.mountedComponent?.destroy();
     this.viewContainerRef.clear();
     this.mountedComponent = undefined;
-  }
-
-  private createConfigKey(config: FederatedLoaderConfig | null): string | null {
-    if (!config) {
-      return null;
-    }
-
-    if (!config.remoteEntry || !config.exposedModule || !config.componentName || !config.moduleName) {
-      return null;
-    }
-
-    return `${config.remoteEntry}::${config.exposedModule}::${config.componentName}::${config.moduleName}`;
-  }
-
-  private async loadComponent(resolved: FederatedLoaderConfig): Promise<void> {
-    const requestId = ++this.loadRequestId;
-
-    this.cleanup();
-
-    try {
-      const loaded = await this.componentMountService.loadAndMountComponent(
-        resolved,
-        this.viewContainerRef,
-      );
-
-      if (this.destroyed || requestId !== this.loadRequestId) {
-        if (loaded) {
-          loaded.destroy();
-        }
-        return;
-      }
-
-      if (!loaded) {
-        this.emitLoadFailure();
-        console.warn(
-          `Failed to load remote component '${resolved.componentName}' from '${resolved.exposedModule}'.`,
-        );
-        return;
-      }
-
-      this.mountedComponent = loaded;
-
-      this.applyInputs();
-      this.loadedEvent.emit(true);
-    } catch (error) {
-      if (this.destroyed || requestId !== this.loadRequestId) {
-        return;
-      }
-
-      this.emitLoadFailure();
-      console.error(error);
-      console.warn(
-        `Failed to load remote component '${resolved.componentName}' from '${resolved.exposedModule}':`,
-        error,
-      );
-    }
   }
 
   private emitLoadFailure(): void {
