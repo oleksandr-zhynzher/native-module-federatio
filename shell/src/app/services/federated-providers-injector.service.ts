@@ -1,9 +1,10 @@
-import { Injectable, EnvironmentInjector, createEnvironmentInjector, inject } from '@angular/core';
-import { loadRemoteModule } from '@angular-architects/module-federation';
-import { Observable, from, throwError } from 'rxjs';
+import { Injectable, EnvironmentInjector, inject } from '@angular/core';
+import { Observable, throwError } from 'rxjs';
 import { map, catchError } from 'rxjs/operators';
 
 import { RyFederatedModule, RyLoadRemoteModuleOptions } from '../models';
+import { FederatedModuleFacadeService } from './federated-module-facade.service';
+import { RemoteInjectorFactory } from './remote-injector-factory.service';
 
 export interface FederatedLoadResult {
   module: RyFederatedModule;
@@ -13,22 +14,24 @@ export interface FederatedLoadResult {
 @Injectable({ providedIn: 'root' })
 export class FederatedProvidersInjectorService {
   private readonly environmentInjector = inject(EnvironmentInjector);
+  private readonly moduleFacade = inject(FederatedModuleFacadeService);
+  private readonly injectorFactory = inject(RemoteInjectorFactory);
 
   public injectProviders(federatedModule: RyFederatedModule): EnvironmentInjector {
     const providers = federatedModule?.providers;
 
-    if (!providers) {
+    if (!providers?.length) {
       return this.environmentInjector;
     }
 
-    return createEnvironmentInjector(providers, this.environmentInjector);
+    return this.injectorFactory.create(providers).injector;
   }
 
-  public loadModule$(
+  public getRemoteModule(
     config: RyLoadRemoteModuleOptions,
     injectProviders = true,
   ): Observable<FederatedLoadResult> {
-    return from(loadRemoteModule<RyFederatedModule>(config)).pipe(
+    return this.moduleFacade.loadRemoteModule(config).pipe(
       map((module) => ({
         module,
         injector: injectProviders ? this.injectProviders(module) : this.environmentInjector,

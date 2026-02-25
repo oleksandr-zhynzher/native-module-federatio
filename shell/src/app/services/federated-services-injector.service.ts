@@ -1,50 +1,52 @@
-import { Injectable, ProviderToken } from '@angular/core';
-import { Observable, of } from 'rxjs';
-import { map, catchError } from 'rxjs/operators';
+import { EnvironmentInjector, Injectable, ProviderToken, inject } from '@angular/core';
+import { Observable, of, map } from 'rxjs';
+import { catchError } from 'rxjs/operators';
 
 import { defaultFederatedEntryConfig } from '../constants';
 import { FederatedProvidersInjectorService } from './federated-providers-injector.service';
-import { RyLoadRemoteModuleOptions } from '../models';
-import { isProviderToken } from '../utils';
+import { RemoteServiceRef, RyFederatedModule, RyLoadRemoteModuleOptions } from '../models';
 
 @Injectable({
   providedIn: 'root',
 })
 export class FederatedServicesInjectorService {
-  constructor(private readonly providersInjector: FederatedProvidersInjectorService) {}
+  private readonly providersInjector = inject(FederatedProvidersInjectorService);
 
-  public inject$<T>(
+  public getRemoteService<T>(
     serviceName: string,
     config: RyLoadRemoteModuleOptions = defaultFederatedEntryConfig,
-  ): Observable<T | null> {
-    return this.providersInjector.loadModule$(config).pipe(
-      map(({ module: federatedModule, injector }) => {
-        const exported = federatedModule?.services?.[serviceName];
-
-        if (!exported) {
-          console.warn(`Federated service "${serviceName}" not found in remote module`);
-          return null;
-        }
-
-        if (!isProviderToken(exported)) {
-          console.warn(`Federated service "${serviceName}" export is not a valid provider token`);
-          return null;
-        }
-
-        try {
-          const instance = injector.get(exported as ProviderToken<unknown>, null);
-          if (instance) return instance as T;
-          console.warn(`Federated service "${serviceName}" resolved to null or undefined`);
-          return null;
-        } catch (err) {
-          console.warn(`Failed to instantiate federated service "${serviceName}": ${String(err)}`);
-          return null;
-        }
-      }),
+  ): Observable<RemoteServiceRef<T | null> | null> {
+    return this.providersInjector.getRemoteModule(config).pipe(
+      map(({ module: federatedModule, injector }) => ({
+        service: this.resolveService<T>(serviceName, federatedModule, injector),
+      })),
       catchError((err) => {
         console.warn(`Error during loading federated service "${serviceName}": ${String(err)}`);
         return of(null);
       }),
     );
+  }
+
+  private resolveService<T>(
+    serviceName: string,
+    federatedModule: RyFederatedModule,
+    injector: EnvironmentInjector,
+  ): T | null {
+    const exported = federatedModule?.services?.[serviceName];
+
+    if (!exported) {
+      console.warn(`Federated service "${serviceName}" not found in remote module`);
+      return null;
+    }
+
+    try {
+      const instance = injector.get(exported as ProviderToken<unknown>, null);
+      if (instance) return instance as T;
+      console.warn(`Federated service "${serviceName}" resolved to null or undefined`);
+      return null;
+    } catch (err) {
+      console.warn(`Failed to instantiate federated service "${serviceName}": ${String(err)}`);
+      return null;
+    }
   }
 }

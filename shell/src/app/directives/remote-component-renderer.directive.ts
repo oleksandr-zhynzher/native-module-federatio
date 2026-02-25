@@ -19,6 +19,7 @@ import { FederatedComponentLoaderService } from '../services';
 
 @Directive({
   selector: '[appDynamicFederatedLoader]',
+  standalone: true,
 })
 export class RemoteComponentRenderer implements OnInit, OnDestroy {
   private readonly destroyRef = inject(DestroyRef);
@@ -56,6 +57,9 @@ export class RemoteComponentRenderer implements OnInit, OnDestroy {
       )
       .subscribe((component) => {
         this.remoteComponent.set(component);
+        // Explicitly apply inputs that may have changed during the in-flight load,
+        // since the effect only tracks signals read in its last execution.
+        untracked(() => this.applyInputs());
         this.loadedEvent.emit(true);
       });
   }

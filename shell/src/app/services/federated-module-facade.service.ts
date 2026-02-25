@@ -35,13 +35,32 @@ export class FederatedModuleFacadeService {
     remoteModule: RyFederatedModule,
     config: RyLoadRemoteModuleOptions,
   ): ModuleWithProviders<unknown> | null {
-    const moduleDescriptor = (remoteModule as Record<string, unknown>)[
-      config.moduleName ?? ''
-    ] as ModuleWithProviders<unknown> | null;
-    return moduleDescriptor;
+    if (!config.moduleName) {
+      return null;
+    }
+
+    const candidate = (remoteModule as Record<string, unknown>)[config.moduleName];
+
+    if (!candidate) {
+      return null;
+    }
+
+    if (
+      typeof candidate === 'object' &&
+      'ngModule' in candidate &&
+      typeof (candidate as { ngModule: unknown }).ngModule === 'function'
+    ) {
+      return candidate as ModuleWithProviders<unknown>;
+    }
+
+    console.warn(
+      `Remote export "${config.moduleName}" is not a valid ModuleWithProviders shape. ` +
+        `Expected { ngModule: Type<unknown>, providers?: Provider[] }.`,
+    );
+    return null;
   }
 
-  private loadRemoteModule(config: RyLoadRemoteModuleOptions): Observable<RyFederatedModule> {
+  public loadRemoteModule(config: RyLoadRemoteModuleOptions): Observable<RyFederatedModule> {
     const options = {
       type: config.type,
       remoteEntry: config.remoteEntry,
