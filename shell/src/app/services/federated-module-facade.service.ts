@@ -1,72 +1,93 @@
-import { Injectable, ModuleWithProviders } from '@angular/core';
+import {
+  createEnvironmentInjector,
+  createNgModule,
+  EnvironmentInjector,
+  inject,
+  Injectable,
+  ModuleWithProviders,
+} from '@angular/core';
 import { loadRemoteModule, LoadRemoteModuleOptions } from '@angular-architects/module-federation';
-import { Observable, from, map } from 'rxjs';
+import { Observable, from } from 'rxjs';
+import { map } from 'rxjs/operators';
 
-import { RyLoadRemoteModuleOptions, RyFederatedModule, RemoteComponentData } from '../models';
+import { LoadFederatedModuleOptions, FederatedModule, RawFederatedModule } from '../models';
+import { isNgModule, isModuleWithProviders } from '../utils';
 
 @Injectable({ providedIn: 'root' })
 export class FederatedModuleFacadeService {
-  public getRemoteComponentData(
-    config: RyLoadRemoteModuleOptions,
-  ): Observable<RemoteComponentData> {
-    return this.loadRemoteModule(config).pipe(
-      map((remoteModule) => {
-        const remoteNgModuleWithProviders = this.getRemoteNgModuleWithProviders(
-          remoteModule,
-          config,
-        );
-        const remoteProviders = remoteModule.providers ?? [];
-        const moduleProviders = remoteNgModuleWithProviders?.providers ?? [];
+  private readonly environmentInjector = inject(EnvironmentInjector);
 
-        const component = remoteModule.components?.[config.componentName ?? ''] ?? null;
-        const ngModule = remoteNgModuleWithProviders?.ngModule ?? null;
-        const providers = [...moduleProviders, ...remoteProviders];
-
-        return {
-          component,
-          ngModule,
-          providers,
-        };
-      }),
+  public getFederatedModule(config: LoadFederatedModuleOptions): Observable<FederatedModule> {
+    return this.loadFederatedModule(config).pipe(
+      map((module) => this.resolveFederatedModule(module, config)),
     );
   }
 
-  private getRemoteNgModuleWithProviders(
-    remoteModule: RyFederatedModule,
-    config: RyLoadRemoteModuleOptions,
-  ): ModuleWithProviders<unknown> | null {
-    if (!config.moduleName) {
-      return null;
-    }
-
-    const candidate = (remoteModule as Record<string, unknown>)[config.moduleName];
-
-    if (!candidate) {
-      return null;
-    }
-
-    if (
-      typeof candidate === 'object' &&
-      'ngModule' in candidate &&
-      typeof (candidate as { ngModule: unknown }).ngModule === 'function'
-    ) {
-      return candidate as ModuleWithProviders<unknown>;
-    }
-
-    console.warn(
-      `Remote export "${config.moduleName}" is not a valid ModuleWithProviders shape. ` +
-        `Expected { ngModule: Type<unknown>, providers?: Provider[] }.`,
-    );
-    return null;
-  }
-
-  public loadRemoteModule(config: RyLoadRemoteModuleOptions): Observable<RyFederatedModule> {
+  private loadFederatedModule(config: LoadFederatedModuleOptions): Observable<RawFederatedModule> {
     const options = {
       type: config.type,
       remoteEntry: config.remoteEntry,
       exposedModule: config.exposedModule,
     } as LoadRemoteModuleOptions;
 
-    return from(loadRemoteModule<RyFederatedModule>(options));
+    return from(loadRemoteModule<RawFederatedModule>(options));
+  }
+
+  private resolveFederatedModule(
+    module: RawFederatedModule,
+    config: LoadFederatedModuleOptions,
+  ): FederatedModule {
+    const federatedNgModule = this.resolveNgModule(module, config.moduleName ?? '');
+
+    const federatedProviders = module.providers ?? [];
+    const federatedModuleProviders = federatedNgModule?.providers ?? [];
+    const providers = [...federatedModuleProviders, ...federatedProviders];
+
+    const components = module.components ?? null;
+    const actions = module.actions ?? null;
+    const selectors = module.selectors ?? null;
+    const services = module.services ?? null;
+    const injector = createEnvironmentInjector(providers, this.environmentInjector);
+    const ngModule = federatedNgModule?.ngModule ?? null;
+    const ngModuleRef = ngModule ? createNgModule(ngModule, injector) : null;
+
+    return {
+      components,
+      actions,
+      selectors,
+      services,
+      providers,
+      injector,
+      ngModuleRef,
+      destroy: () => {
+        injector?.destroy();
+        ngModuleRef?.destroy();
+      },
+    };
+  }
+
+  private resolveNgModule(
+    module: RawFederatedModule,
+    moduleName: string,
+  ): ModuleWithProviders<unknown> | null {
+    if (!moduleName) {
+      return null;
+    }
+
+    const candidate = module[moduleName];
+
+    if (isModuleWithProviders(candidate)) {
+      return candidate;
+    }
+
+    if (isNgModule(candidate)) {
+      return { ngModule: candidate, providers: [] };
+    }
+
+    console.warn(
+      `Module "${moduleName}" not found or is not a valid NgModule/ModuleWithProviders. ` +
+        `Check if "${moduleName}" is correctly exported from the remote module and matches the expected Angular structure.`,
+    );
+    return null;
   }
 }
