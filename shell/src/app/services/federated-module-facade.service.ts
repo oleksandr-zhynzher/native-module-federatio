@@ -7,25 +7,77 @@ import {
   ModuleWithProviders,
 } from '@angular/core';
 import { loadRemoteModule, LoadRemoteModuleOptions } from '@angular-architects/module-federation';
-import { Observable, from } from 'rxjs';
-import { map } from 'rxjs/operators';
+import { Observable, from, throwError } from 'rxjs';
+import { catchError, map, shareReplay } from 'rxjs/operators';
 
-import { LoadFederatedModuleOptions, FederatedModule, RawFederatedModule } from '../models';
-import { isNgModule, isModuleWithProviders } from '../utils';
+import {
+  LoadFederatedModuleOptions,
+  FederatedModule,
+  RawFederatedModule,
+  MODULE_TYPE_MAP,
+} from '../models';
+import { isModuleWithProviders, isNgModule } from '../utils';
 
 @Injectable({ providedIn: 'root' })
 export class FederatedModuleFacadeService {
   private readonly environmentInjector = inject(EnvironmentInjector);
 
+  /**
+   * Keyed by a canonical string derived from the config fields that uniquely
+   * identify a remote module. Concurrent or repeated calls with the same config
+   * receive the same cached Observable so the remote bundle is loaded only once
+   * and a single EnvironmentInjector instance is shared. The entry is evicted
+   * when destroy() is called on the resolved FederatedModule.
+   */
+  private readonly moduleCache = new Map<string, Observable<FederatedModule>>();
+
   public getFederatedModule(config: LoadFederatedModuleOptions): Observable<FederatedModule> {
-    return this.loadFederatedModule(config).pipe(
-      map((module) => this.resolveFederatedModule(module, config)),
+    if (!config.remoteEntry) {
+      return throwError(() => new Error('getFederatedModule: config.remoteEntry is required'));
+    }
+    if (!config.exposedModule) {
+      return throwError(() => new Error('getFederatedModule: config.exposedModule is required'));
+    }
+    if (!config.type) {
+      return throwError(() => new Error('getFederatedModule: config.type is required'));
+    }
+
+    const cacheKey = this.buildCacheKey(config);
+    const cached = this.moduleCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const module$ = this.loadFederatedModule(config).pipe(
+      map((rawModule) => {
+        const federatedModule = this.resolveFederatedModule(rawModule, config);
+        const originalDestroy = federatedModule.destroy;
+        federatedModule.destroy = () => {
+          this.moduleCache.delete(cacheKey);
+          originalDestroy();
+        };
+        return federatedModule;
+      }),
+      catchError((err) => {
+        this.moduleCache.delete(cacheKey);
+        return throwError(() => err);
+      }),
+      shareReplay({ bufferSize: 1, refCount: false }),
+    );
+
+    this.moduleCache.set(cacheKey, module$);
+    return module$;
+  }
+
+  private buildCacheKey(config: LoadFederatedModuleOptions): string {
+    return [config.type, config.remoteEntry, config.exposedModule, config.moduleName ?? ''].join(
+      '::',
     );
   }
 
   private loadFederatedModule(config: LoadFederatedModuleOptions): Observable<RawFederatedModule> {
     const options = {
-      type: config.type,
+      type: MODULE_TYPE_MAP[config.type],
       remoteEntry: config.remoteEntry,
       exposedModule: config.exposedModule,
     } as LoadRemoteModuleOptions;
@@ -37,7 +89,9 @@ export class FederatedModuleFacadeService {
     module: RawFederatedModule,
     config: LoadFederatedModuleOptions,
   ): FederatedModule {
-    const federatedNgModule = this.resolveNgModule(module, config.moduleName ?? '');
+    const federatedNgModule = config.moduleName
+      ? this.resolveNgModule(module, config.moduleName)
+      : null;
 
     const federatedProviders = module.providers ?? [];
     const federatedModuleProviders = federatedNgModule?.providers ?? [];
@@ -49,7 +103,15 @@ export class FederatedModuleFacadeService {
     const services = module.services ?? null;
     const injector = createEnvironmentInjector(providers, this.environmentInjector);
     const ngModule = federatedNgModule?.ngModule ?? null;
-    const ngModuleRef = ngModule ? createNgModule(ngModule, injector) : null;
+    let ngModuleRef: ReturnType<typeof createNgModule> | null = null;
+    try {
+      ngModuleRef = ngModule ? createNgModule(ngModule, injector) : null;
+    } catch (err) {
+      injector.destroy();
+      throw err;
+    }
+
+    let destroyed = false;
 
     return {
       components,
@@ -60,7 +122,9 @@ export class FederatedModuleFacadeService {
       injector,
       ngModuleRef,
       destroy: () => {
-        injector?.destroy();
+        if (destroyed) return;
+        destroyed = true;
+        injector.destroy();
         ngModuleRef?.destroy();
       },
     };
@@ -69,11 +133,7 @@ export class FederatedModuleFacadeService {
   private resolveNgModule(
     module: RawFederatedModule,
     moduleName: string,
-  ): ModuleWithProviders<unknown> | null {
-    if (!moduleName) {
-      return null;
-    }
-
+  ): ModuleWithProviders<unknown> {
     const candidate = module[moduleName];
 
     if (isModuleWithProviders(candidate)) {
@@ -84,10 +144,10 @@ export class FederatedModuleFacadeService {
       return { ngModule: candidate, providers: [] };
     }
 
-    console.warn(
-      `Module "${moduleName}" not found or is not a valid NgModule/ModuleWithProviders. ` +
-        `Check if "${moduleName}" is correctly exported from the remote module and matches the expected Angular structure.`,
+    throw new Error(
+      `"${moduleName}" exported from the remote module is not a valid ModuleWithProviders object. ` +
+        `Ensure the remote exports it as \`{ ngModule: ${moduleName}, providers: [...] }\` ` +
+        `or via a static \`forRoot()\` / \`forChild()\` factory rather than a raw NgModule class.`,
     );
-    return null;
   }
 }

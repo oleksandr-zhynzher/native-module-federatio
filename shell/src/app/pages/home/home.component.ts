@@ -1,11 +1,12 @@
 import { Component, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { RemoteComponentRenderer } from '../../directives/remote-component-renderer.directive';
+import { FederatedComponentLoaderDirective } from '../../directives';
+import { FederatedModuleType } from '../../models';
 
 @Component({
   selector: 'app-home',
   standalone: true,
-  imports: [CommonModule, RemoteComponentRenderer],
+  imports: [CommonModule, FederatedComponentLoaderDirective],
   template: `
     <div class="home-container">
       <h2>Dynamic Component Loading</h2>
@@ -27,8 +28,9 @@ import { RemoteComponentRenderer } from '../../directives/remote-component-rende
           Current component: <strong>{{ currentComponent }}</strong>
         </p>
         <ng-container
-          appDynamicFederatedLoader
+          appFederatedComponentLoader
           [config]="{
+            type: md.Module,
             remoteEntry: 'http://localhost:4300/remoteEntry.js',
             exposedModule: './public-api',
             componentName: currentComponent,
@@ -101,7 +103,7 @@ import { RemoteComponentRenderer } from '../../directives/remote-component-rende
 })
 export class HomeComponent {
   currentComponent = 'App';
-
+  md = FederatedModuleType;
   loadComponent(componentName: string) {
     this.currentComponent = componentName;
   }

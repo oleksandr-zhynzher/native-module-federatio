@@ -4,6 +4,7 @@ import {
   Directive,
   OnDestroy,
   OnInit,
+  Type,
   ViewContainerRef,
   inject,
   input,
@@ -11,9 +12,9 @@ import {
   signal,
 } from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
-import { EMPTY, catchError, switchMap, tap, filter } from 'rxjs';
+import { EMPTY, catchError, switchMap, tap, filter, skip } from 'rxjs';
 
-import { FederatedComponentRef, LoadFederatedModuleOptions } from '../models';
+import { FederatedComponentRef, FederatedModule, LoadFederatedComponentOptions } from '../models';
 import { FederatedComponentLoaderService } from '../services/federated-component-loader.service';
 import { PlaceholderComponent } from '../components/placeholder/placeholder.component';
 
@@ -21,7 +22,7 @@ import { PlaceholderComponent } from '../components/placeholder/placeholder.comp
   selector: '[appFederatedComponentLoader]',
   standalone: true,
 })
-export class FederatedComponentLoader implements OnInit, OnDestroy {
+export class FederatedComponentLoaderDirective implements OnInit, OnDestroy {
   private readonly destroyRef = inject(DestroyRef);
   private readonly federatedComponentLoader = inject(FederatedComponentLoaderService);
   private readonly viewContainerRef = inject(ViewContainerRef);
@@ -30,19 +31,19 @@ export class FederatedComponentLoader implements OnInit, OnDestroy {
   public isPlaceholderVisible = input<boolean>(false);
   public destroyRemoteModule = input<boolean>(true);
   public placeholderHeight = input<number>(300);
-  public config = input.required<LoadFederatedModuleOptions>();
+  public config = input.required<LoadFederatedComponentOptions>();
 
   public readonly destroyedEvent = output<boolean>();
   public readonly loadedEvent = output<boolean>();
 
   private readonly federatedComponentRef = signal<FederatedComponentRef | null>(null);
-  private placeholderRef!: ComponentRef<PlaceholderComponent> | null;
+  private placeholderRef: ComponentRef<PlaceholderComponent> | null = null;
 
   private readonly config$ = toObservable(this.config);
   private readonly componentInputs$ = toObservable(this.componentInputs);
 
   public ngOnInit(): void {
-    this.componentInputs$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => {
+    this.componentInputs$.pipe(skip(1), takeUntilDestroyed(this.destroyRef)).subscribe(() => {
       this.applyInputs();
     });
 
@@ -55,29 +56,25 @@ export class FederatedComponentLoader implements OnInit, OnDestroy {
           this.showPlaceholder();
         }),
         switchMap((config) =>
-          this.federatedComponentLoader.getFederatedComponent(config, this.viewContainerRef).pipe(
+          this.federatedComponentLoader.getFederatedComponent(config).pipe(
             catchError((error) => {
               console.error(
                 `Failed to load component "${config?.componentName}" from "${config?.exposedModule}" at "${config?.remoteEntry}":`,
                 error,
               );
-              this.emitLoadFailure();
+              this.loadedEvent.emit(false);
               return EMPTY;
             }),
           ),
         ),
       )
-      .subscribe({
-        next: (component) => {
-          this.hidePlaceholder();
-          this.federatedComponentRef.set(component);
-          this.applyInputs();
-          this.loadedEvent.emit(true);
-        },
-        error: (err) => {
-          console.error('Unexpected error while loading federated component:', err);
-          this.emitLoadFailure();
-        },
+      .subscribe(({ componentType, federatedModule }) => {
+        this.hidePlaceholder();
+        this.federatedComponentRef.set(
+          this.createComponentInstance(componentType, federatedModule),
+        );
+        this.applyInputs();
+        this.loadedEvent.emit(true);
       });
   }
 
@@ -115,16 +112,11 @@ export class FederatedComponentLoader implements OnInit, OnDestroy {
       component.componentRef.destroy();
 
       if (this.destroyRemoteModule()) {
-        component.destroyFederatedModuleRef();
+        component.destroy();
       }
     }
 
     this.hidePlaceholder();
-    this.viewContainerRef.clear();
-  }
-
-  private emitLoadFailure(): void {
-    this.loadedEvent.emit(false);
   }
 
   private showPlaceholder(): void {
@@ -141,5 +133,23 @@ export class FederatedComponentLoader implements OnInit, OnDestroy {
       this.placeholderRef.destroy();
       this.placeholderRef = null;
     }
+  }
+
+  private createComponentInstance(
+    componentType: Type<unknown>,
+    federatedModule: FederatedModule,
+  ): FederatedComponentRef {
+    const { ngModuleRef, injector } = federatedModule;
+    const componentRef = this.viewContainerRef.createComponent(componentType, {
+      ngModuleRef: ngModuleRef ?? undefined,
+      injector,
+    });
+
+    return {
+      componentRef,
+      destroy: () => {
+        federatedModule.destroy();
+      },
+    };
   }
 }

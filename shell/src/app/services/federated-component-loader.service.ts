@@ -1,50 +1,33 @@
-import { ComponentRef, Injectable, Type, ViewContainerRef, inject } from '@angular/core';
+import { Injectable, Type, inject } from '@angular/core';
 import { Observable, map } from 'rxjs';
 
 import { FederatedModuleFacadeService } from './federated-module-facade.service';
-import { LoadFederatedModuleOptions, FederatedModule, FederatedComponentRef } from '../models';
+import { LoadFederatedComponentOptions, FederatedModule, ResolvedFederatedComponent } from '../models';
 
 @Injectable({ providedIn: 'root' })
 export class FederatedComponentLoaderService {
   private readonly federatedModuleFacade = inject(FederatedModuleFacadeService);
 
   public getFederatedComponent(
-    config: LoadFederatedModuleOptions,
-    viewContainerRef: ViewContainerRef,
-  ): Observable<FederatedComponentRef> {
+    config: LoadFederatedComponentOptions,
+  ): Observable<ResolvedFederatedComponent> {
     return this.federatedModuleFacade.getFederatedModule(config).pipe(
       map((federatedModule) => {
-        const component = this.getComponent(federatedModule, config);
-        return this.createComponentInstance(component, federatedModule, viewContainerRef);
+        try {
+          return {
+            componentType: this.getComponent(federatedModule, config),
+            federatedModule,
+          };
+        } catch (err) {
+          federatedModule.destroy();
+          throw err;
+        }
       }),
     );
   }
 
-  private createComponentInstance(
-    component: Type<unknown>,
-    federatedModule: FederatedModule,
-    viewContainerRef: ViewContainerRef,
-  ): FederatedComponentRef {
-    const { ngModuleRef, injector } = federatedModule;
-    const componentRef = viewContainerRef.createComponent(component, {
-      ngModuleRef: ngModuleRef ?? undefined,
-      injector,
-    });
-
-    return {
-      componentRef,
-      destroyFederatedModuleRef: () => {
-        federatedModule.destroy();
-      },
-    };
-  }
-
-  private getComponent(module: FederatedModule, config: LoadFederatedModuleOptions): Type<unknown> {
-    if (!config.componentName) {
-      throw new Error('getComponent: config.componentName is required');
-    }
-
-    const componentName = config.componentName;
+  private getComponent(module: FederatedModule, config: LoadFederatedComponentOptions): Type<unknown> {
+    const { componentName } = config;
     const component = module.components?.[componentName];
 
     if (!component) {

@@ -1,8 +1,8 @@
-import { inject, Injectable } from '@angular/core';
-import { Observable, of } from 'rxjs';
-import { map, catchError } from 'rxjs/operators';
+import { inject, Injectable, Type } from '@angular/core';
+import { Observable, throwError } from 'rxjs';
+import { map } from 'rxjs/operators';
 
-import { LoadFederatedModuleOptions } from '../models';
+import { FederatedServiceRef, LoadFederatedModuleOptions } from '../models';
 import { FederatedModuleFacadeService } from './federated-module-facade.service';
 
 @Injectable({
@@ -14,44 +14,42 @@ export class FederatedServiceLoaderService {
   public getRemoteService<T>(
     serviceName: string,
     config: LoadFederatedModuleOptions,
-  ): Observable<T | null> {
+  ): Observable<FederatedServiceRef<T>> {
     if (!serviceName) {
-      throw new Error('getRemoteService: serviceName is required');
+      return throwError(() => new Error('getRemoteService: serviceName is required'));
     }
 
     return this.federatedModuleFacadeService.getFederatedModule(config).pipe(
-      map(({ services, injector }) => {
+      map(({ services, injector, destroy }) => {
         const exported = services?.[serviceName];
 
         if (!exported) {
-          console.warn(
-            `Service "${serviceName}" not found in remote module "${config.exposedModule}" at "${config.remoteEntry}". ` +
-              `Ensure it is included in the "services" object exported by the remote.`,
+          destroy();
+          throw new Error(
+            `Service "${serviceName}" is not exported from "${config.exposedModule}" at "${config.remoteEntry}".`,
           );
-          return null;
         }
 
+        let serviceRef: T | null;
         try {
-          const instance = injector.get(exported, null);
-          if (instance) return instance as T;
-          console.warn(
-            `Service "${serviceName}" from "${config.exposedModule}" resolved to null or undefined using the provided injector.`,
-          );
-          return null;
+          serviceRef = injector.get<T | null>(exported as Type<T>, null);
         } catch (err) {
-          console.warn(
-            `Failed to instantiate federated service "${serviceName}" from "${config.exposedModule}":`,
-            err,
+          destroy();
+          throw new Error(
+            `Failed to instantiate service "${serviceName}" from "${config.exposedModule}" at "${config.remoteEntry}". ` +
+              `Cause: ${err instanceof Error ? err.message : String(err)}`,
           );
-          return null;
         }
-      }),
-      catchError((err) => {
-        console.warn(
-          `Error loading federated module for service "${serviceName}" from "${config.remoteEntry}":`,
-          err,
-        );
-        return of(null);
+
+        if (serviceRef === null) {
+          destroy();
+          throw new Error(
+            `Service "${serviceName}" from "${config.exposedModule}" at "${config.remoteEntry}" ` +
+              `resolved to null. Ensure the service is listed in the remote module's providers.`,
+          );
+        }
+
+        return { serviceRef, destroy };
       }),
     );
   }
